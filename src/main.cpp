@@ -21,6 +21,8 @@
 #include "FS.h"
 #include "SPIFFS.h"
 #include "ESP32_RMT_Driver.h"
+#include <time.h>
+#include <sys/time.h>
 
 
 // Global settings
@@ -129,6 +131,7 @@ unsigned int expires = 0;
 
 String availability = "";
 String activity = "";
+String calendarEvent = "";
 
 // Statemachine
 #define SMODEINITIAL 0               // Initial
@@ -267,40 +270,29 @@ void setAnimation(uint8_t segment, uint8_t mode = FX_MODE_STATIC, uint32_t color
 }
 
 void setPresenceAnimation() {
-	// Activity: Available, Away, BeRightBack, Busy, DoNotDisturb, InACall, InAConferenceCall, Inactive, InAMeeting, Offline, OffWork, OutOfOffice, PresenceUnknown, Presenting, UrgentInterruptionsOnly
-
-	if (activity.equals("Available")) {
-		setAnimation(0, FX_MODE_STATIC, GREEN);
-	}
-	if (activity.equals("Away")) {
-		setAnimation(0, FX_MODE_STATIC, YELLOW);
-	}
-	if (activity.equals("BeRightBack")) {
-		setAnimation(0, FX_MODE_STATIC, ORANGE);
-	}
-	if (activity.equals("Busy")) {
-		setAnimation(0, FX_MODE_STATIC, PURPLE);
-	}
-	if (activity.equals("DoNotDisturb") || activity.equals("UrgentInterruptionsOnly")) {
-		setAnimation(0, FX_MODE_STATIC, PINK);
-	}
-	if (activity.equals("InACall")) {
-		setAnimation(0, FX_MODE_BREATH, RED);
-	}
-	if (activity.equals("InAConferenceCall")) {
-		setAnimation(0, FX_MODE_BREATH, RED, 9000);
-	}
-	if (activity.equals("Inactive")) {
-		setAnimation(0, FX_MODE_BREATH, WHITE);
-	}
-	if (activity.equals("InAMeeting")) {
-		setAnimation(0, FX_MODE_SCAN, RED);
-	}	
-	if (activity.equals("Offline") || activity.equals("OffWork") || activity.equals("OutOfOffice") || activity.equals("PresenceUnknown")) {
-		setAnimation(0, FX_MODE_STATIC, BLACK);
-	}
-	if (activity.equals("Presenting")) {
-		setAnimation(0, FX_MODE_COLOR_WIPE, RED);
+	if (calendarEvent.equals("")) {
+		// Activity: Available, Away, BeRightBack, Busy, DoNotDisturb, InACall, InAConferenceCall, Inactive, InAMeeting, Offline, OffWork, OutOfOffice, PresenceUnknown, Presenting, UrgentInterruptionsOnly
+		if (
+			activity.equals("Busy") ||
+			activity.equals("DoNotDisturb") ||
+			activity.equals("UrgentInterruptionsOnly") ||
+			activity.equals("InACall") ||
+			activity.equals("InAConferenceCall") ||
+			activity.equals("InAMeeting") ||
+			activity.equals("Presenting")) {
+				setAnimation(0, FX_MODE_STATIC, RED);
+		} else {
+			// Activity: Offline, OffWork, OutOfOffice, PresenceUnknown, Available, Away, BeRightBack, Inactive
+			setAnimation(0, FX_MODE_STATIC, BLACK);
+		}
+	} else {
+		// calendarEvent: InAMeeting, UpcomingMeeting
+		if (calendarEvent.equals("UpcomingMeeting")) {
+			setAnimation(0, FX_MODE_BREATH, ORANGE);
+		}
+		if (calendarEvent.equals("InAMeeting")) {
+			setAnimation(0, FX_MODE_STATIC, RED);
+		}
 	}
 }
 
@@ -355,6 +347,7 @@ void pollForToken() {
 
 // Get presence information
 void pollPresence() {
+	Serial.printf("----------- pollPresence() ------------\n");
 	// See: https://github.com/microsoftgraph/microsoft-graph-docs/blob/ananya/api-reference/beta/resources/presence.md
 	const size_t capacity = 1024;
 	DynamicJsonDocument responseDoc(capacity);
@@ -380,8 +373,126 @@ void pollPresence() {
 		activity = responseDoc["activity"].as<String>();
 		retries = 0;
 
-		setPresenceAnimation();
+		// setPresenceAnimation();
 	}
+	Serial.printf("-------------------------------------\n");
+}
+
+bool isFuture(const char* dateTimeStr) {
+    // Parse the dateTime string manually
+    int year, month, day, hour, minute, second;
+    sscanf(dateTimeStr, "%d-%d-%dT%d:%d:%d", &year, &month, &day, &hour, &minute, &second);
+
+    // Create a tm struct and fill it with the parsed data
+    struct tm timeinfo = {};
+    timeinfo.tm_year = year - 1900; // tm_year is years since 1900
+    timeinfo.tm_mon = month - 1;    // tm_mon is 0-based
+    timeinfo.tm_mday = day;
+    timeinfo.tm_hour = hour;
+    timeinfo.tm_min = minute;
+    timeinfo.tm_sec = second;
+
+    // Convert tm struct to time_t for comparison
+    time_t givenTime = mktime(&timeinfo);
+
+    // Get the current time
+    time_t currentTime = time(nullptr);
+
+    // Compare the given time with the current time
+    return difftime(givenTime, currentTime) > 0;
+}
+
+void getFormattedTimeInXMinutes(char* buffer, size_t bufferSize, int minutesAgo) {
+    time_t now = time(nullptr);
+    struct tm timeinfo;
+
+    // Subtract the specified number of minutes (minutesAgo * 60 seconds)
+    time_t timeXMinutesAgo = now + minutesAgo * 60;
+
+    // Convert to tm struct
+    gmtime_r(&timeXMinutesAgo, &timeinfo);
+
+    // Format the time as a string in the ISO 8601 format
+    strftime(buffer, bufferSize, "%Y-%m-%dT%H:%M:%S", &timeinfo);
+}
+
+
+// Get events information
+void calendarView() {
+	Serial.printf("----------- calendarView() ------------\n");
+	// See: https://learn.microsoft.com/en-gb/graph/api/user-list-calendarview?view=graph-rest-1.0&tabs=http
+
+	configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+
+	// Wait till time is synchronized
+	Serial.println("Waiting for time");
+	while (time(nullptr) < 24*3600) {
+			Serial.print(".");
+			delay(1000);
+	}
+	Serial.println("");
+	
+	char startTimeBuffer[25]; // Large enough to hold the ISO 8601 format
+	getFormattedTimeInXMinutes(startTimeBuffer, sizeof(startTimeBuffer), 0);
+	Serial.printf("startTime%s\n", startTimeBuffer);
+	String startTimeString(startTimeBuffer);
+
+	char endTimeBuffer[25]; // Large enough to hold the ISO 8601 format
+	getFormattedTimeInXMinutes(endTimeBuffer, sizeof(endTimeBuffer), 5);
+	Serial.printf("endTime%s\n", endTimeBuffer);
+	String endTimeString(endTimeBuffer);
+
+	String url = "https://graph.microsoft.com/v1.0/me/calendarView?startDateTime=" + startTimeString + "&endDateTime=" + endTimeString + "&$select=subject,start,end,isAllDay&$filter=isAllDay%20eq%20false%20and%20isCancelled%20eq%20false&$orderby=start/dateTime+ASC";
+	Serial.print("\nURL: ");
+	Serial.println(url);
+
+	const size_t capacity = 1024 * 50;
+	DynamicJsonDocument responseDoc(capacity);
+	boolean res = requestJsonApi(responseDoc, url, "", capacity, "GET", true);
+
+	calendarEvent = "";
+
+	if (!res) {
+		state = SMODEPRESENCEREQUESTERROR;
+		retries++;
+	} else if (responseDoc.containsKey("error")) {
+		const char* _error_code = responseDoc["error"]["code"];
+		if (strcmp(_error_code, "InvalidAuthenticationToken")) {
+			DBG_PRINTLN(F("calendarView() - Refresh needed"));
+			tsPolling = millis();
+			state = SMODEREFRESHTOKEN;
+		} else {
+			Serial.printf("calendarView() - Error: %s\n", _error_code);
+			state = SMODEPRESENCEREQUESTERROR;
+			retries++;
+		}
+	} else {
+		Serial.println();
+		serializeJson(responseDoc, Serial);
+		Serial.println();
+		if(responseDoc.containsKey("value") && responseDoc["value"].is<JsonArray>()) {
+			JsonArray events = responseDoc["value"].as<JsonArray>();
+
+			if (events.size() > 0) {
+				calendarEvent = "InAMeeting";
+				for(JsonVariant event : events) {
+					const char* startDateTime = event["start"]["dateTime"];
+					Serial.println(event["subject"].as<const char*>());
+					Serial.println(startDateTime);
+					if (isFuture(startDateTime)) {
+						Serial.println("The date is in the FUTURE.");
+						calendarEvent = "UpcomingMeeting";
+					}
+					Serial.println("-----------------------");
+				}
+			}
+		} else {
+			Serial.println("'value' field is missing or not an array");
+		}
+		// setPresenceAnimation();
+		Serial.printf("\ncalendarEvent: %s\n", calendarEvent.c_str());
+	}
+	Serial.printf("-------------------------------------\n");
 }
 
 // Refresh the access token
@@ -482,8 +593,11 @@ void statemachine() {
 	// Statemachine: Poll for presence information, even if there was a error before (handled below)
 	if (state == SMODEPOLLPRESENCE) {
 		if (millis() >= tsPolling) {
-			DBG_PRINTLN(F("Polling presence info ..."));
+			DBG_PRINTLN(F("Polling calendarView..."));
+			calendarView();
+			DBG_PRINTLN(F("Polling presence info..."));
 			pollPresence();
+			setPresenceAnimation();
 			tsPolling = millis() + (atoi(paramPollIntervalValue) * 1000);
 			Serial.printf("--> Availability: %s, Activity: %s\n\n", availability.c_str(), activity.c_str());
 		}

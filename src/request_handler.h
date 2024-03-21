@@ -44,6 +44,7 @@ boolean requestJsonApi(JsonDocument& doc, String url, String payload = "", size_
 			https.addHeader("Authorization", header);
 			Serial.printf("[HTTPS] Auth token valid for %d s.\n", getTokenLifetime());
 		}
+		// https.addHeader("Prefer", "outlook.timezone=UTC");
 
 		// Start connection and send HTTP header
 		int httpCode = 0;
